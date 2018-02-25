@@ -15,11 +15,14 @@
 
 #include "Minet.h"
 
+#include "tcpstate.h"
+
 
 using std::cout;
 using std::endl;
 using std::cerr;
 using std::string;
+
 
 int main(int argc, char *argv[])
 {
@@ -56,14 +59,74 @@ int main(int argc, char *argv[])
       if (event.handle==mux) {
         Packet p;
         MinetReceive(mux,p);
+        cerr << "received packet from below\n";
         unsigned tcphlen=TCPHeader::EstimateTCPHeaderLength(p);
         cerr << "estimated header len="<<tcphlen<<"\n";
         p.ExtractHeaderFromPayload<TCPHeader>(tcphlen);
         IPHeader ipl=p.FindHeader(Headers::IPHeader);
         TCPHeader tcph=p.FindHeader(Headers::TCPHeader);
 
-        cerr << "TCP Packet: IP Header is "<<ipl<<" and ";
-        cerr << "TCP Header is "<<tcph << " and ";
+        Connection c;
+
+        ipl.GetDestIP(c.dest);
+        ipl.GetSourceIP(c.src);
+        ipl.GetProtocol(c.protocol);
+        tcph.GetDestPort(c.destport);
+        tcph.GetSourcePort(c.srcport); 
+
+        ConnectionList<TCPState> clist;
+        ConnectionList<TCPState>::iterator cs = clist.FindMatching(c);
+        unsigned short len;
+        unsigned char tcp_len;
+        unsigned char ip_len;
+
+        ipl.GetTotalLength(len);
+        ipl.GetHeaderLength(ip_len);
+        tcph.GetHeaderLen(tcp_len);
+
+        len -= (4*tcp_len + 4*ip_len);
+
+        // bool checksumok;
+
+        Buffer &data = p.GetPayload().ExtractFront(len);
+        // SockRequestResponse write(WRITE,
+        //             (*cs).connection,
+        //             data,
+        //             len,
+        //             EOK);
+
+        SockRequestResponse write (WRITE,(*cs).connection, data, len, EOK);
+
+        MinetSend(sock,write);
+
+        // cs = clist.FindMatching(c);
+        // if (cs!=clist.end()) {
+        //     tcph.GetLength(len);
+        //     len-=TCP_HEADER_LENGTH;
+        //     Buffer &data = p.GetPayload().ExtractFront(len);
+        //     SockRequestResponse write(WRITE,
+        //             (*cs).connection,
+        //             data,
+        //             len,
+        //             EOK);
+        //     if (!checksumok) {
+        //       MinetSendToMonitor(MinetMonitoringEvent("forwarding packet to sock even though checksum failed"));
+        //     }
+        //     MinetSend(sock,write);
+        //   } else {
+        //     MinetSendToMonitor(MinetMonitoringEvent("Unknown port, sending ICMP error message"));
+        //     IPAddress source; iph.GetSourceIP(source);
+        //     ICMPPacket error(source,DESTINATION_UNREACHABLE,PORT_UNREACHABLE,p);
+        //     MinetSendToMonitor(MinetMonitoringEvent("ICMP error message has been sent to host"));
+        //     MinetSend(mux, error);
+        //   }
+
+
+        cerr << "IP: "<<c.src<< " to "<<c.dest;
+        cerr << "Port "<<c.srcport<< " to "<<c.destport;
+
+        // cerr << "TCP Packet: IP Header is "<<ipl<<" and ";
+        // cerr << "TCP Header is "<<tcph << " and ";
 
         cerr << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID");
         
@@ -72,6 +135,7 @@ int main(int argc, char *argv[])
       if (event.handle==sock) {
         SockRequestResponse s;
         MinetReceive(sock,s);
+        cerr << "received packet from above\n";
         cerr << "Received Socket Request:" << s << endl;
       }
     }
