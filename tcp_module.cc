@@ -85,7 +85,7 @@ int main(int argc, char *argv[])
         unsigned short len;
         unsigned char tcp_len;
         unsigned char ip_len;
-        unsigned char flag;
+        unsigned char flag = 0;
         unsigned int seqnum;
 
 
@@ -104,6 +104,7 @@ int main(int argc, char *argv[])
           cerr << "In connections list" << endl;  
           unsigned int cur_state = cs->state.GetState();
           cerr << "State: " << cur_state << endl;
+          cerr << cs->connection << endl;
 
 
           switch(cur_state) {
@@ -111,29 +112,58 @@ int main(int argc, char *argv[])
               cerr << "Entered LISTEN" << endl;
               if(IS_SYN(flag)) {
                 cerr << "Received a SYN" << endl;
-                cs->state.SetState(SYN_RCVD);
                 cs->connection = c;
+                cs->state.SetState(SYN_RCVD);
                 cs->state.last_acked = cs->state.last_sent;
-                cs->state.SetLastRecvd(seqnum + 1);
-                cs->bTmrActive = true;
+                cs->bTmrActive = false;
                 cs->timeout = Time() + 8;
-                cs->state.last_sent = cs->state.last_sent + 1;
 
                 Packet p_send;
-                unsigned char send_flag = 0;
-                SET_SYN(send_flag);
-                SET_ACK(send_flag);
-                build_packet(p_send,*cs,send_flag,0);
-                cerr << p_send << endl;
+                // unsigned char send_flag = 0;
+                // SET_SYN(send_flag);
+                // SET_ACK(send_flag);
+                // build_packet(p_send,*cs,send_flag,0);
+                // cerr << p_send << endl;
+
+
+                IPHeader iph2;
+                TCPHeader tcph2;
+                int total_size = 0 + TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH;
+                unsigned char nflag = 0;
+                SET_ACK(nflag);
+                SET_SYN(nflag);
+
+                iph2.SetSourceIP(cs->connection.src);
+                iph2.SetDestIP(cs->connection.dest);
+                iph2.SetProtocol(IP_PROTO_TCP);
+                iph2.SetTotalLength(total_size);
+                p_send.PushFrontHeader(iph2);
+                tcph2.SetSourcePort(cs->connection.srcport, p_send);
+                tcph2.SetDestPort(cs->connection.destport, p_send);
+                tcph2.SetFlags(nflag, p_send);
+                tcph2.SetHeaderLen(5,p);
+                tcph2.SetUrgentPtr(0,p);
+                tcph2.SetAckNum(cs->state.GetLastRecvd(), p);
+                tcph2.SetWinSize(cs->state.GetN(), p);
+                tcph2.SetSeqNum(cs->state.GetLastSent()+1,p);
+                tcph2.RecomputeChecksum(p_send);
+                p_send.PushBackHeader(tcph2);
+                cerr << iph2 << endl;
+                cerr << tcph2 << endl;
+
+
+
+
+                MinetSend(mux,p_send);
+
+                // Being buggy, only sending packets when I do sleep command and then its too late and client sends RST
+                sleep(2);
                 MinetSend(mux,p_send);
               }
               break;
             }
             case SYN_RCVD: {
               cerr << "Entered SYN_RCVD" << endl;
-              if(IS_SYN(flag)) {
-                cerr << "Still SYN" << endl;
-              }
               if(IS_ACK(flag)) {
                 cerr << "Received an ACK" << endl;
                 cs->state.SetState(ESTABLISHED);
