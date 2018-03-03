@@ -23,7 +23,7 @@ using std::endl;
 using std::cerr;
 using std::string;
 
-void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, unsigned int size, unsigned char flag);
+void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size);
 
 int main(int argc, char *argv[])
 {
@@ -87,107 +87,105 @@ int main(int argc, char *argv[])
         unsigned char ip_len;
         unsigned char flag = 0;
         unsigned int seqnum;
-
+        unsigned int acknum;
+        unsigned short win_size;
+        unsigned short urgent;
+        bool checksum;
 
         ipl.GetTotalLength(len);
         ipl.GetHeaderLength(ip_len);
         tcph.GetHeaderLen(tcp_len);
         tcph.GetFlags(flag);
         tcph.GetSeqNum(seqnum);
+        tcph.GetAckNum(acknum);
+        tcph.GetWinSize(win_size);
+        tcph.GetUrgentPtr(urgent);
+        checksum = tcph.IsCorrectChecksum(p);
+
+        if(!checksum) {
+          cerr << "INVALID CHECKSUM" << endl;
+        }
 
         len -= (4*tcp_len + 4*ip_len);
         cerr << "Data Size: " << len << endl;
         Buffer &data = p.GetPayload().ExtractFront(len);
 
         ConnectionList<TCPState>::iterator cs = clist.FindMatching(c);
-        if(cs!=clist.end()) {
-          cerr << "In connections list" << endl;  
-          unsigned int cur_state = cs->state.GetState();
-          cerr << "State: " << cur_state << endl;
-          cerr << cs->connection << endl;
-
-
-          switch(cur_state) {
-            case LISTEN: {
-              cerr << "Entered LISTEN" << endl;
-              if(IS_SYN(flag)) {
-                cerr << "Received a SYN" << endl;
-                cs->connection = c;
-                cs->state.SetState(SYN_RCVD);
-                cs->state.last_acked = cs->state.last_sent;
-                cs->bTmrActive = false;
-                cs->timeout = Time() + 8;
-
-                Packet p_send;
-                // unsigned char send_flag = 0;
-                // SET_SYN(send_flag);
-                // SET_ACK(send_flag);
-                // build_packet(p_send,*cs,send_flag,0);
-                // cerr << p_send << endl;
-
-
-                IPHeader iph2;
-                TCPHeader tcph2;
-                int total_size = 0 + TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH;
-                unsigned char nflag = 0;
-                SET_ACK(nflag);
-                SET_SYN(nflag);
-
-                iph2.SetSourceIP(cs->connection.src);
-                iph2.SetDestIP(cs->connection.dest);
-                iph2.SetProtocol(IP_PROTO_TCP);
-                iph2.SetTotalLength(total_size);
-                p_send.PushFrontHeader(iph2);
-                tcph2.SetSourcePort(cs->connection.srcport, p_send);
-                tcph2.SetDestPort(cs->connection.destport, p_send);
-                tcph2.SetFlags(nflag, p_send);
-                tcph2.SetHeaderLen(5,p);
-                tcph2.SetUrgentPtr(0,p);
-                tcph2.SetAckNum(cs->state.GetLastRecvd(), p);
-                tcph2.SetWinSize(cs->state.GetN(), p);
-                tcph2.SetSeqNum(cs->state.GetLastSent()+1,p);
-                tcph2.RecomputeChecksum(p_send);
-                p_send.PushBackHeader(tcph2);
-                cerr << iph2 << endl;
-                cerr << tcph2 << endl;
-
-
-
-
-                MinetSend(mux,p_send);
-
-                // Being buggy, only sending packets when I do sleep command and then its too late and client sends RST
-                sleep(2);
-                MinetSend(mux,p_send);
-              }
-              break;
-            }
-            case SYN_RCVD: {
-              cerr << "Entered SYN_RCVD" << endl;
-              if(IS_ACK(flag)) {
-                cerr << "Received an ACK" << endl;
-                cs->state.SetState(ESTABLISHED);
-                SockRequestResponse write(WRITE,
-                        (*cs).connection,
-                        data,
-                        len,
-                        EOK);
-                MinetSend(sock,write);
-              }
-              break;
-            }
-
-          }
-          
-
-          // bool checksumok;
-
-
-          cerr << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID") << endl;
-        }
-        else {
+        if(cs == clist.end()) {
           cerr << "Not in connections list" << endl;
         }
+        else {
+          cerr << "In connections list" << endl;  
+        }
+
+        unsigned int cur_state = cs->state.GetState();
+        cerr << "State: " << cur_state << endl;
+        cerr << cs->connection << endl;
+
+
+        switch(cur_state) {
+          case LISTEN: {
+            cerr << "Entered LISTEN" << endl;
+            if(IS_SYN(flag)) {
+              cerr << "Received a SYN" << endl;
+
+              /*
+              CS is a pointer to a connection state mapping
+              Connection to State mapping class:
+                Connection connection
+                Time timeout
+                STATE state
+                bool bTmrActive  
+              */
+
+              cs->connection = c;
+              cs->timeout = Time() + 10;
+              cs->state.SetState(SYN_RCVD);
+              cs->state.SetLastRecvd(seqnum);
+              // cs->state.SetLastAcked(cs->state.GetLastSent());
+              // cs->state.SetLastSent(cs->state.GetLastSent() + 1);
+              cs->bTmrActive = true;
+              
+              Packet p_send;
+              build_packet(p_send,*cs,0);
+
+              MinetSend(mux,p_send);
+              // Eventually replace sleep with a timeout
+              sleep(2);
+              MinetSend(mux,p_send);
+            }
+            break;
+          }
+          case SYN_RCVD: {
+            cerr << "Entered SYN_RCVD" << endl;
+            if(IS_ACK(flag)) {
+              cerr << "Received an ACK" << endl;
+              cerr << "data:\n" << data << endl;
+
+              cs->state.SetState(ESTABLISHED);
+              cs->state.SetLastRecvd(seqnum);
+
+              // SockRequestResponse write(WRITE,
+              //         (*cs).connection,
+              //         data,
+              //         len,
+              //         EOK);
+              // MinetSend(sock,write);
+            }
+            break;
+            case ESTABLISHED: {
+              cerr << "Entered ESTABLISHED" << endl;
+              cerr << "data:\n" << data << endl;
+              // cs->state.SetState(CLOSED);
+              // clist.erase(cs);
+            }
+          }
+
+        }
+        
+
+
+        cerr << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID") << endl;
 
         cerr << "---------------\n";
         
@@ -236,14 +234,15 @@ int main(int argc, char *argv[])
 }
 
 
-void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, unsigned int size, unsigned char flag) {
+void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size) {
   IPHeader iph;
   TCPHeader tcph;
   Connection c = Conn_to_State.connection;
   int total_size = size + TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH;
-  unsigned char nflag = 0;
-  SET_ACK(nflag);
-  SET_SYN(nflag);
+
+  unsigned char flag = 0;
+  SET_ACK(flag);
+  SET_SYN(flag);
 
   iph.SetSourceIP(c.src);
   iph.SetDestIP(c.dest);
@@ -252,12 +251,12 @@ void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, 
   p.PushFrontHeader(iph);
   tcph.SetSourcePort(c.srcport, p);
   tcph.SetDestPort(c.destport, p);
-  tcph.SetFlags(nflag, p);
+  tcph.SetFlags(flag, p);
+  tcph.SetSeqNum(Conn_to_State.state.GetLastSent()+1,p);
+  tcph.SetAckNum(Conn_to_State.state.GetLastRecvd()+1,p);
+  tcph.SetWinSize(Conn_to_State.state.GetN(), p);
   tcph.SetHeaderLen(5,p);
   tcph.SetUrgentPtr(0,p);
-  tcph.SetAckNum(Conn_to_State.state.GetLastRecvd(), p);
-  tcph.SetWinSize(Conn_to_State.state.GetN(), p);
-  tcph.SetSeqNum(Conn_to_State.state.GetLastSent()+1,p);
   tcph.RecomputeChecksum(p);
   p.PushBackHeader(tcph);
   cerr << iph << endl;
