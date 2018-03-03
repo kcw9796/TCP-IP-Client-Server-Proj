@@ -200,12 +200,7 @@ int main(int argc, char *argv[])
         cerr << "Received Socket Request:" << s << endl;
         switch(s.type) {
           case ACCEPT: {
-            // passive open from remote. The connection should be fully bound on
-            // the local side and unbound on the remote side. The data, bytes count, and error
-            // fields are ignored. The TCP module will do the passive open and immediately
-            // return a STATUS with only the error code set. Whenever a connection arrives,
-            // the TCP module will accept it and send a zero byte WRITE with the fully bound
-            // connection. 
+            // passive open 
             cerr << "ACCEPT request" << endl;
 
             // Add connection state pair to connections list
