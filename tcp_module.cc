@@ -23,7 +23,14 @@ using std::endl;
 using std::cerr;
 using std::string;
 
-void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size);
+enum flag_state { SYN = 0,
+                  SYNACK = 1,
+                  ACK = 2,
+                  PSH = 3,
+                  FIN = 4,
+                  RST = 5, };
+
+void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size, flag_state flag_s);
 
 int main(int argc, char *argv[])
 {
@@ -102,9 +109,7 @@ int main(int argc, char *argv[])
         tcph.GetUrgentPtr(urgent);
         checksum = tcph.IsCorrectChecksum(p);
 
-        if(!checksum) {
-          cerr << "INVALID CHECKSUM" << endl;
-        }
+        cerr << "Checksum is " << (checksum ? "VALID" : "INVALID") << endl;
 
         len -= (4*tcp_len + 4*ip_len);
         cerr << "Data Size: " << len << endl;
@@ -141,18 +146,17 @@ int main(int argc, char *argv[])
               cs->connection = c;
               cs->timeout = Time() + 10;
               cs->state.SetState(SYN_RCVD);
-              cs->state.SetLastRecvd(seqnum);
-              // cs->state.SetLastAcked(cs->state.GetLastSent());
-              // cs->state.SetLastSent(cs->state.GetLastSent() + 1);
+              cs->state.SetLastRecvd(seqnum+1);
+              cs->state.SetLastAcked(cs->state.GetLastSent());
               cs->bTmrActive = true;
               
               Packet p_send;
-              build_packet(p_send,*cs,0);
-
+              build_packet(p_send,*cs,0,SYNACK);
               MinetSend(mux,p_send);
               // Eventually replace sleep with a timeout
               sleep(2);
               MinetSend(mux,p_send);
+              cs->state.SetLastSent(cs->state.GetLastSent()+1);
             }
             break;
           }
@@ -160,32 +164,89 @@ int main(int argc, char *argv[])
             cerr << "Entered SYN_RCVD" << endl;
             if(IS_ACK(flag)) {
               cerr << "Received an ACK" << endl;
-              cerr << "data:\n" << data << endl;
 
               cs->state.SetState(ESTABLISHED);
-              cs->state.SetLastRecvd(seqnum);
+              cs->state.SetLastRecvd(cs->state.GetLastRecvd() + len);
+              cs->state.SetLastAcked(acknum);
+              // cs->state.SetSendRwnd(win_size);
+              cs->bTmrActive = false;
 
-              // SockRequestResponse write(WRITE,
-              //         (*cs).connection,
-              //         data,
-              //         len,
-              //         EOK);
-              // MinetSend(sock,write);
-            }
+              // Send WRITE response
+              // SockRequestResponse response;
+              // response.connection = cs->connection;
+              // response.type = WRITE;
+              // response.data = data;
+              // response.bytes = len;
+              // response.error = EOK;
+              // MinetSend(sock,response);
+            }  
             break;
+          }
             case ESTABLISHED: {
               cerr << "Entered ESTABLISHED" << endl;
-              cerr << "data:\n" << data << endl;
-              // cs->state.SetState(CLOSED);
-              // clist.erase(cs);
+
+              if(IS_PSH(flag)) {
+                cerr << "Received data" << endl;
+                cerr << "data:\n" << data << endl;
+
+                cerr << "seqnum: " << seqnum << endl;
+                if(seqnum == cs->state.GetLastRecvd()) {
+                  cerr << "In order Packet" << endl;
+                  cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
+                  cs->state.SetLastRecvd(seqnum+len);
+                  cerr << "New Last received: " << cs->state.GetLastRecvd() << endl;
+
+                  Packet p_send;
+                  build_packet(p_send,*cs,0,ACK);
+                  MinetSend(mux,p_send);
+
+                  // Send WRITE response
+                  // SockRequestResponse response;
+                  // response.connection = cs->connection;
+                  // response.type = WRITE;
+                  // response.data = data;
+                  // response.bytes = len;
+                  // response.error = EOK;
+                  // MinetSend(sock,response);
+
+                }
+                else {
+                  cerr << "Out of order Packet" << endl;
+                }
+
+              }
+              else if(IS_FIN(flag)) {
+                cerr << "Close Connection" << endl;
+                cs->state.SetState(CLOSE_WAIT);
+                cerr << "State: " << cs->state.GetState() << endl;
+                cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
+                cs->state.SetLastRecvd(seqnum+1);
+                cerr << "New Last received: " << cs->state.GetLastRecvd() << endl;
+                
+                // Send ACK to FIN request
+                Packet p_send;
+                build_packet(p_send,*cs,0,ACK);
+                MinetSend(mux,p_send);
+
+                // Send FIN to close
+                Packet p_send2;
+                build_packet(p_send2,*cs,0,FIN);
+                MinetSend(mux,p_send2);
+                cs->state.SetState(LAST_ACK);
+                
+              }
+              break;
             }
-          }
+            case LAST_ACK: {
+              if(IS_ACK(flag)) {
+                cerr << "Received ACK to close" << endl;
+                cs->state.SetState(CLOSED);
+                clist.erase(cs);
+              }
+              break;
+            }
 
         }
-        
-
-
-        cerr << "Checksum is " << (tcph.IsCorrectChecksum(p) ? "VALID" : "INVALID") << endl;
 
         cerr << "---------------\n";
         
@@ -229,15 +290,36 @@ int main(int argc, char *argv[])
 }
 
 
-void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size) {
+void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size, flag_state flag_s) {
   IPHeader iph;
   TCPHeader tcph;
   Connection c = Conn_to_State.connection;
   int total_size = size + TCP_HEADER_BASE_LENGTH + IP_HEADER_BASE_LENGTH;
 
   unsigned char flag = 0;
-  SET_ACK(flag);
-  SET_SYN(flag);
+  switch(flag_s) {
+    case SYN: {
+      SET_SYN(flag);
+      break;
+    }
+    case SYNACK: {
+      SET_SYN(flag);
+      SET_ACK(flag);
+      break;
+    }
+    case ACK: {
+      SET_ACK(flag);
+      break;
+    }
+    case FIN: {
+      SET_FIN(flag);
+      SET_ACK(flag);
+      break;
+    }
+    default: {
+
+    }
+  }
 
   iph.SetSourceIP(c.src);
   iph.SetDestIP(c.dest);
@@ -247,8 +329,9 @@ void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, 
   tcph.SetSourcePort(c.srcport, p);
   tcph.SetDestPort(c.destport, p);
   tcph.SetFlags(flag, p);
-  tcph.SetSeqNum(Conn_to_State.state.GetLastSent()+1,p);
-  tcph.SetAckNum(Conn_to_State.state.GetLastRecvd()+1,p);
+  Conn_to_State.state.SetLastSent(Conn_to_State.state.GetLastSent()+size);
+  tcph.SetSeqNum(Conn_to_State.state.GetLastSent(),p);
+  tcph.SetAckNum(Conn_to_State.state.GetLastRecvd(),p);
   tcph.SetWinSize(Conn_to_State.state.GetN(), p);
   tcph.SetHeaderLen(5,p);
   tcph.SetUrgentPtr(0,p);
