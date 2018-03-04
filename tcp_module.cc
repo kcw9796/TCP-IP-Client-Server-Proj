@@ -53,18 +53,47 @@ int main(int argc, char *argv[])
 
   MinetSendToMonitor(MinetMonitoringEvent("tcp_module handling TCP traffic"));
 
+  double Timeout = 1;
   MinetEvent event;
 
   // List of connection to state mappings 
   ConnectionList<TCPState> clist;
-  while (MinetGetNextEvent(event)==0) {
+  while (MinetGetNextEvent(event, Timeout)==0) {
+    if(event.eventtype==MinetEvent::Timeout) {
+      ConnectionList<TCPState>::iterator cs = clist.FindEarliest();
+      if(cs != clist.end() && Time() > cs->timeout) {
+        cerr << "\n---------------\n";
+        cerr << "TIMEOUT" << endl;
+
+        switch(cs->state.GetState()) {
+          case SYN_RCVD: {
+            cs->timeout = Time() + 2;
+            Packet p_send;
+            build_packet(p_send,*cs,0,SYNACK);
+            MinetSend(mux,p_send);
+            break;
+          }
+          case LAST_ACK: {
+            cs->timeout = Time() + 2;
+            Packet p_send;
+            build_packet(p_send,*cs,0,FIN);
+            MinetSend(mux,p_send);
+            break;
+          }
+        }
+
+        cerr << "\n---------------\n";
+      }
+        
+    }
     // if we received an unexpected type of event, print error
-    if (event.eventtype!=MinetEvent::Dataflow 
+    else if (event.eventtype!=MinetEvent::Dataflow 
 	|| event.direction!=MinetEvent::IN) {
       MinetSendToMonitor(MinetMonitoringEvent("Unknown event ignored."));
       cerr << "invalid event from Minet" << endl;
     // if we received a valid event from Minet, do processing
-    } else {
+    } 
+    else {
       //  Data from the IP layer below  //
       if (event.handle==mux) {
         cerr << "\n---------------\n";
@@ -144,7 +173,7 @@ int main(int argc, char *argv[])
               */
 
               cs->connection = c;
-              cs->timeout = Time() + 10;
+              cs->timeout = Time() + 2;
               cs->state.SetState(SYN_RCVD);
               cs->state.SetLastRecvd(seqnum+1);
               cs->state.SetLastAcked(cs->state.GetLastSent());
@@ -152,9 +181,6 @@ int main(int argc, char *argv[])
               
               Packet p_send;
               build_packet(p_send,*cs,0,SYNACK);
-              MinetSend(mux,p_send);
-              // Eventually replace sleep with a timeout
-              sleep(2);
               MinetSend(mux,p_send);
               cs->state.SetLastSent(cs->state.GetLastSent()+1);
             }
@@ -172,13 +198,14 @@ int main(int argc, char *argv[])
               cs->bTmrActive = false;
 
               // Send WRITE response
-              // SockRequestResponse response;
-              // response.connection = cs->connection;
-              // response.type = WRITE;
-              // response.data = data;
-              // response.bytes = len;
-              // response.error = EOK;
-              // MinetSend(sock,response);
+              cerr << "Passing empty write response to tell application connection is open" << endl;
+              SockRequestResponse response;
+              response.connection = cs->connection;
+              response.type = WRITE;
+              response.data = data;
+              response.bytes = len;
+              response.error = EOK;
+              MinetSend(sock,response);
             }  
             break;
           }
@@ -201,14 +228,15 @@ int main(int argc, char *argv[])
                   MinetSend(mux,p_send);
 
                   // Send WRITE response
-                  // SockRequestResponse response;
-                  // response.connection = cs->connection;
-                  // response.type = WRITE;
-                  // response.data = data;
-                  // response.bytes = len;
-                  // response.error = EOK;
-                  // MinetSend(sock,response);
-
+                  cerr << "Passing data up to socket" << endl;
+                  SockRequestResponse response;
+                  response.connection = cs->connection;
+                  response.type = WRITE;
+                  response.data = data;
+                  response.bytes = len;
+                  response.error = EOK;
+                  MinetSend(sock,response);
+                  
                 }
                 else {
                   cerr << "Out of order Packet" << endl;
@@ -229,6 +257,8 @@ int main(int argc, char *argv[])
                 MinetSend(mux,p_send);
 
                 // Send FIN to close
+                cs->bTmrActive = true;
+                cs->timeout = Time() + 2;
                 Packet p_send2;
                 build_packet(p_send2,*cs,0,FIN);
                 MinetSend(mux,p_send2);
@@ -240,6 +270,7 @@ int main(int argc, char *argv[])
             case LAST_ACK: {
               if(IS_ACK(flag)) {
                 cerr << "Received ACK to close" << endl;
+                cs->bTmrActive = false;
                 cs->state.SetState(CLOSED);
                 clist.erase(cs);
               }
@@ -286,6 +317,7 @@ int main(int argc, char *argv[])
       }
     }
   }
+  MinetDeinit();
   return 0;
 }
 
