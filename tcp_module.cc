@@ -80,6 +80,12 @@ int main(int argc, char *argv[])
             MinetSend(mux,p_send);
             break;
           }
+          case SYN_SENT: {
+            cs->timeout = Time() + 2;
+            Packet p_send;
+            build_packet(p_send,*cs,0,SYN);
+            MinetSend(mux,p_send);
+          }
         }
 
         cerr << "\n---------------\n";
@@ -213,79 +219,111 @@ int main(int argc, char *argv[])
             }  
             break;
           }
-            case ESTABLISHED: {
-              cerr << "Entered ESTABLISHED" << endl;
+          case SYN_SENT: {
+            cerr << "Entered SYN_SENT" << endl;
+            if(IS_SYN(flag) && IS_ACK(flag)) {
+              cerr << "Received SYNACK" << endl;
+              cs->bTmrActive = false;
+              cs->state.SetState(ESTABLISHED);
+              cs->state.SetLastSent(cs->state.GetLastSent()+1);
+              cs->state.SetLastRecvd(seqnum+1);
+              cs->state.SetLastAcked(acknum);
+              cs->state.SetSendRwnd(win_size);
+              Packet p_send;
+              build_packet(p_send,*cs,0,ACK);
+              MinetSend(mux,p_send);
 
-              if(len > 0) {
-                cerr << "Received data" << endl;
-                cerr << "data:\n" << data << endl;
+              // Send WRITE response
+              SockRequestResponse response;
+              response.connection = cs->connection;
+              response.type = WRITE;
+              response.bytes = 0;
+              response.error = EOK;
+              MinetSend(sock,response);
+              // SockRequestResponse write(WRITE,
+              // (*cs).connection,
+              // data,
+              // 0,
+              // EOK);
+              // MinetSend(sock,write);
+              cerr << "Sent empty Write response to indicate an established connection" << endl;
+            }
+            break;
+          }
+          case ESTABLISHED: {
+            cerr << "Entered ESTABLISHED" << endl;
 
-                cerr << "seqnum: " << seqnum << endl;
-                if(seqnum == cs->state.GetLastRecvd()) {
-                  cerr << "In order Packet" << endl;
-                  cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
-                  cs->state.SetLastRecvd(seqnum+len);
-                  cerr << "New Last received: " << cs->state.GetLastRecvd() << endl;
-                  cs->state.SetSendRwnd(win_size);
+            if(IS_FIN(flag)) {
+              cerr << "Close Connection" << endl;
+              cs->state.SetState(CLOSE_WAIT);
+              cerr << "State: " << cs->state.GetState() << endl;
+              cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
+              cs->state.SetLastRecvd(seqnum+len+1);
+              cerr << "New Last received: " << cs->state.GetLastRecvd() << endl;
+              
+              // Send ACK to FIN request
+              Packet p_send;
+              build_packet(p_send,*cs,0,ACK);
+              MinetSend(mux,p_send);
 
-                  Packet p_send;
-                  build_packet(p_send,*cs,0,ACK);
-                  MinetSend(mux,p_send);
+              // Send FIN to close
+              cs->bTmrActive = true;
+              cs->timeout = Time() + 2;
+              Packet p_send2;
+              build_packet(p_send2,*cs,0,FIN);
+              MinetSend(mux,p_send2);
+              cs->state.SetState(LAST_ACK);
+              
+            }
+            if(len > 0) {
+              cerr << "Received data" << endl;
+              cerr << "data:\n" << data << endl;
 
-                  // Send WRITE response
-                  cerr << "Passing data up to socket" << endl;
-                  // SockRequestResponse response;
-                  // response.connection = cs->connection;
-                  // response.type = WRITE;
-                  // response.data = data;
-                  // response.bytes = len;
-                  // response.error = EOK;
-                  // MinetSend(sock,response);
-                  
-                }
-                else {
-                  cerr << "Out of order Packet" << endl;
-                }
-
-              }
-              if(IS_ACK(flag)) {
-                // if(cs->state.last_acked <= acknum) {
-                //   cs->state.SetLastAcked(acknum);
-                // }
-              }
-              if(IS_FIN(flag)) {
-                cerr << "Close Connection" << endl;
-                cs->state.SetState(CLOSE_WAIT);
-                cerr << "State: " << cs->state.GetState() << endl;
+              cerr << "seqnum: " << seqnum << endl;
+              if(seqnum == cs->state.GetLastRecvd()) {
+                cerr << "In order Packet" << endl;
                 cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
-                cs->state.SetLastRecvd(seqnum+1);
+                cs->state.SetLastRecvd(seqnum+len);
                 cerr << "New Last received: " << cs->state.GetLastRecvd() << endl;
-                
-                // Send ACK to FIN request
+                cs->state.SetSendRwnd(win_size);
+
                 Packet p_send;
                 build_packet(p_send,*cs,0,ACK);
                 MinetSend(mux,p_send);
 
-                // Send FIN to close
-                cs->bTmrActive = true;
-                cs->timeout = Time() + 2;
-                Packet p_send2;
-                build_packet(p_send2,*cs,0,FIN);
-                MinetSend(mux,p_send2);
-                cs->state.SetState(LAST_ACK);
+                // Send WRITE response
+                cerr << "Passing data up to socket" << endl;
+                // SockRequestResponse response;
+                // response.connection = cs->connection;
+                // response.type = WRITE;
+                // response.data = data;
+                // response.bytes = len;
+                // response.error = EOK;
+                // MinetSend(sock,response);
                 
               }
-              break;
-            }
-            case LAST_ACK: {
-              if(IS_ACK(flag)) {
-                cerr << "Received ACK to close" << endl;
-                cs->bTmrActive = false;
-                cs->state.SetState(CLOSED);
-                clist.erase(cs);
+              else {
+                cerr << "Out of order Packet" << endl;
               }
-              break;
+
             }
+            if(IS_ACK(flag)) {
+              // if(cs->state.last_acked <= acknum) {
+              //   cs->state.SetLastAcked(acknum);
+              // }
+            }
+            
+            break;
+          }
+          case LAST_ACK: {
+            if(IS_ACK(flag)) {
+              cerr << "Received ACK to close" << endl;
+              cs->bTmrActive = false;
+              cs->state.SetState(CLOSED);
+              clist.erase(cs);
+            }
+            break;
+          }
 
         }
 
@@ -301,6 +339,25 @@ int main(int argc, char *argv[])
         cerr << "RECEIVED PACKET FROM ABOVE:\n";
         cerr << "Received Socket Request:" << s << endl;
         switch(s.type) {
+          case CONNECT: {
+            // active open 
+            cerr << "CONNECT request" << endl;
+            TCPState new_state(1,SYN_SENT,3);
+            ConnectionToStateMapping<TCPState> Conn_to_State(s.connection,Time()+2,new_state,true);
+            Conn_to_State.state.SetLastAcked(0);
+            clist.push_back(Conn_to_State);
+            Packet p_send;
+            build_packet(p_send,Conn_to_State,0,SYN);
+            MinetSend(mux,p_send);
+
+            // Send STATUS response
+            response.connection = s.connection;
+            response.type = STATUS;
+            response.bytes = 0;
+            response.error = EOK;
+            MinetSend(sock,response);
+            break;
+          }
           case ACCEPT: {
             // passive open 
             cerr << "ACCEPT request" << endl;
@@ -319,6 +376,17 @@ int main(int argc, char *argv[])
             MinetSend(sock,response);
             cerr << "Sent Accept response" << endl; 
 
+            break;
+          }
+          case WRITE: {
+            break;
+          }
+          case CLOSE: {
+
+          }
+          case FORWARD:
+          case STATUS: 
+          default: {
             break;
           }
 
