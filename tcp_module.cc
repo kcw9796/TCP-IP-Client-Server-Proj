@@ -156,6 +156,9 @@ int main(int argc, char *argv[])
         cerr << "State: " << cur_state << endl;
         cerr << cs->connection << endl;
 
+        // if(IS_RST(flag)) {
+        //   cs->bTmrActive = false;
+        // }
 
         switch(cur_state) {
           case LISTEN: {
@@ -177,6 +180,7 @@ int main(int argc, char *argv[])
               cs->state.SetState(SYN_RCVD);
               cs->state.SetLastRecvd(seqnum+1);
               cs->state.SetLastAcked(cs->state.GetLastSent());
+              cs->state.SetLastSent(cs->state.GetLastSent()+1);
               cs->bTmrActive = true;
               
               Packet p_send;
@@ -194,7 +198,7 @@ int main(int argc, char *argv[])
               cs->state.SetState(ESTABLISHED);
               // cs->state.SetLastRecvd(cs->state.GetLastRecvd() + len);
               cs->state.SetLastAcked(acknum);
-              // cs->state.SetSendRwnd(win_size);
+              cs->state.SetSendRwnd(win_size);
               cs->bTmrActive = false;
 
               // Send WRITE response
@@ -222,6 +226,7 @@ int main(int argc, char *argv[])
                   cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
                   cs->state.SetLastRecvd(seqnum+len);
                   cerr << "New Last received: " << cs->state.GetLastRecvd() << endl;
+                  cs->state.SetSendRwnd(win_size);
 
                   Packet p_send;
                   build_packet(p_send,*cs,0,ACK);
@@ -244,9 +249,9 @@ int main(int argc, char *argv[])
 
               }
               if(IS_ACK(flag)) {
-                if(cs->state.last_acked <= acknum) {
-                  cs->state.SetLastAcked(acknum);
-                }
+                // if(cs->state.last_acked <= acknum) {
+                //   cs->state.SetLastAcked(acknum);
+                // }
               }
               if(IS_FIN(flag)) {
                 cerr << "Close Connection" << endl;
