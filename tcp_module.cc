@@ -28,7 +28,8 @@ enum flag_state { SYN = 0,
                   ACK = 2,
                   PSH = 3,
                   FIN = 4,
-                  RST = 5, };
+                  RST = 5,
+                  PSHACK = 6 };
 
 void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size, flag_state flag_s);
 
@@ -308,9 +309,11 @@ int main(int argc, char *argv[])
 
             }
             if(IS_ACK(flag)) {
-              // if(cs->state.last_acked <= acknum) {
-              //   cs->state.SetLastAcked(acknum);
-              // }
+              cerr << "Received an ACK" << endl;
+              if(cs->state.last_acked <= acknum) {
+                cs->state.SetLastAcked(acknum);
+                cerr << "New Last Acked: " << cs->state.GetLastAcked() << endl;
+              }
             }
             
             break;
@@ -338,6 +341,7 @@ int main(int argc, char *argv[])
         MinetReceive(sock,s);
         cerr << "RECEIVED PACKET FROM ABOVE:\n";
         cerr << "Received Socket Request:" << s << endl;
+        ConnectionList<TCPState>::iterator cs = clist.FindMatching(s.connection);
         switch(s.type) {
           case CONNECT: {
             // active open 
@@ -374,11 +378,36 @@ int main(int argc, char *argv[])
             response.bytes = 0;
             response.error = EOK;
             MinetSend(sock,response);
-            cerr << "Sent Accept response" << endl; 
+            cerr << "Sent STATUS response" << endl; 
 
             break;
           }
           case WRITE: {
+            cerr << "WRITE request" << endl;
+            if(cs != clist.end() && cs->state.GetState() == ESTABLISHED) {
+              // cs->timeout = Time() + 2;
+              // cs->bTmrActive = true;
+              Buffer b = s.data;
+              cs->state.SendBuffer.AddBack(b);
+              unsigned int size = cs->state.SendBuffer.GetSize();
+              cerr << "Size: " << size << endl;
+              cerr << b << endl;
+              Packet *p_send = new Packet(b);
+              cerr << "Seqnum: " << cs->state.GetLastSent() << endl;
+              build_packet(*p_send,*cs,size,PSHACK);
+              MinetSend(mux,*p_send);
+              delete p_send;
+
+              // Send STATUS response
+              response.connection = s.connection;
+              response.type = STATUS;
+              response.bytes = size;
+              response.error = EOK;
+              MinetSend(sock,response);
+              cerr << "Sent STATUS response" << endl;               
+
+
+            }
             break;
           }
           case CLOSE: {
@@ -426,6 +455,10 @@ void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, 
       SET_ACK(flag);
       break;
     }
+    case PSHACK: {
+      SET_PSH(flag);
+      SET_ACK(flag);
+    }
     default: {
 
     }
@@ -439,8 +472,8 @@ void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, 
   tcph.SetSourcePort(c.srcport, p);
   tcph.SetDestPort(c.destport, p);
   tcph.SetFlags(flag, p);
-  Conn_to_State.state.SetLastSent(Conn_to_State.state.GetLastSent()+size);
   tcph.SetSeqNum(Conn_to_State.state.GetLastSent(),p);
+  Conn_to_State.state.SetLastSent(Conn_to_State.state.GetLastSent()+size);
   tcph.SetAckNum(Conn_to_State.state.GetLastRecvd(),p);
   tcph.SetWinSize(Conn_to_State.state.GetN(), p);
   tcph.SetHeaderLen(5,p);
