@@ -29,7 +29,8 @@ enum flag_state { SYN = 0,
                   PSH = 3,
                   FIN = 4,
                   RST = 5,
-                  PSHACK = 6 };
+                  PSHACK = 6,
+                  FINACK = 7 };
 
 void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size, flag_state flag_s);
 
@@ -86,6 +87,14 @@ int main(int argc, char *argv[])
             Packet p_send;
             build_packet(p_send,*cs,0,SYN);
             MinetSend(mux,p_send);
+            break;
+          }
+          case FIN_WAIT1: {
+            cs->timeout = Time() + 2;
+            Packet p_send;
+            build_packet(p_send,*cs,0,FINACK);
+            MinetSend(mux,p_send);
+            break;
           }
         }
 
@@ -210,13 +219,13 @@ int main(int argc, char *argv[])
 
               // Send WRITE response
               cerr << "Passing empty write response to tell application connection is open" << endl;
-              // SockRequestResponse response;
-              // response.connection = cs->connection;
-              // response.type = WRITE;
-              // response.data = data;
-              // response.bytes = len;
-              // response.error = EOK;
-              // MinetSend(sock,response);
+              SockRequestResponse response;
+              response.connection = cs->connection;
+              response.type = WRITE;
+              response.data = data;
+              response.bytes = len;
+              response.error = EOK;
+              MinetSend(sock,response);
             }  
             break;
           }
@@ -241,12 +250,6 @@ int main(int argc, char *argv[])
               response.bytes = 0;
               response.error = EOK;
               MinetSend(sock,response);
-              // SockRequestResponse write(WRITE,
-              // (*cs).connection,
-              // data,
-              // 0,
-              // EOK);
-              // MinetSend(sock,write);
               cerr << "Sent empty Write response to indicate an established connection" << endl;
             }
             break;
@@ -294,13 +297,13 @@ int main(int argc, char *argv[])
 
                 // Send WRITE response
                 cerr << "Passing data up to socket" << endl;
-                // SockRequestResponse response;
-                // response.connection = cs->connection;
-                // response.type = WRITE;
-                // response.data = data;
-                // response.bytes = len;
-                // response.error = EOK;
-                // MinetSend(sock,response);
+                SockRequestResponse response;
+                response.connection = cs->connection;
+                response.type = WRITE;
+                response.data = data;
+                response.bytes = len;
+                response.error = EOK;
+                MinetSend(sock,response);
                 
               }
               else {
@@ -318,12 +321,75 @@ int main(int argc, char *argv[])
             
             break;
           }
+          case FIN_WAIT1: {
+            cerr << "Enetered FIN_WAIT1" << endl;
+            if(IS_FIN(flag) && IS_ACK(flag)) {
+              cerr << "Received FINACK" << endl;
+              cs->state.SetState(TIME_WAIT);
+              cs->state.SetLastSent(cs->state.GetLastSent()+1);
+              cs->state.SetLastRecvd(cs->state.GetLastRecvd()+1);
+              Packet p_send;
+              build_packet(p_send,*cs,0,ACK);
+              MinetSend(mux,p_send);
+              cerr << "Sent ACK" << endl;
+
+              // Send CLOSE response
+              SockRequestResponse response;
+              response.connection = cs->connection;
+              response.type = CLOSE;
+              response.bytes = 0;
+              response.error = EOK;
+              MinetSend(sock,response);
+              cerr << "Sent CLOSE response" << endl;
+
+              cs->bTmrActive = false;
+              cs->state.SetState(CLOSED);
+              clist.erase(cs);
+              cerr << "Connection Actively Closed" << endl;
+            }
+            else if(IS_ACK(flag)) {
+              cerr << "Received ACK" << endl;
+              cs->bTmrActive = false;
+              cs->state.SetState(FIN_WAIT2);
+              cs->state.SetLastSent(cs->state.GetLastSent()+1);
+              cs->state.SetLastRecvd(cs->state.GetLastRecvd()+1);
+              cs->state.SetLastAcked(acknum);
+            }
+            break;
+          }
+          case FIN_WAIT2: {
+            cerr << "Enetered FIN_WAIT2" << endl;
+            if(IS_FIN(flag)) {
+              cerr << "Received FIN" << endl;
+              cs->state.SetState(TIME_WAIT);
+              Packet p_send;
+              build_packet(p_send,*cs,0,ACK);
+              MinetSend(mux,p_send);
+              cerr << "Sent ACK" << endl;
+
+              // Send CLOSE response
+              SockRequestResponse response;
+              response.connection = cs->connection;
+              response.type = CLOSE;
+              response.bytes = 0;
+              response.error = EOK;
+              MinetSend(sock,response);
+              cerr << "Sent CLOSE response" << endl;
+
+              cs->bTmrActive = false;
+              cs->state.SetState(CLOSED);
+              clist.erase(cs);
+              cerr << "Connection Actively Closed" << endl;
+            }
+          }
           case LAST_ACK: {
+            cerr << "Enetered LAST_ACK" << endl;
             if(IS_ACK(flag)) {
               cerr << "Received ACK to close" << endl;
               cs->bTmrActive = false;
               cs->state.SetState(CLOSED);
               clist.erase(cs);
+              cerr << "Connection Passively Closed" << endl;
             }
             break;
           }
@@ -384,12 +450,14 @@ int main(int argc, char *argv[])
           }
           case WRITE: {
             cerr << "WRITE request" << endl;
+            unsigned int size = 0;
+            int err = ENOMATCH;
             if(cs != clist.end() && cs->state.GetState() == ESTABLISHED) {
               // cs->timeout = Time() + 2;
               // cs->bTmrActive = true;
               Buffer b = s.data;
               cs->state.SendBuffer.AddBack(b);
-              unsigned int size = cs->state.SendBuffer.GetSize();
+              size = cs->state.SendBuffer.GetSize();
               cerr << "Size: " << size << endl;
               cerr << b << endl;
               Packet *p_send = new Packet(b);
@@ -397,21 +465,37 @@ int main(int argc, char *argv[])
               build_packet(*p_send,*cs,size,PSHACK);
               MinetSend(mux,*p_send);
               delete p_send;
-
-              // Send STATUS response
-              response.connection = s.connection;
-              response.type = STATUS;
-              response.bytes = size;
-              response.error = EOK;
-              MinetSend(sock,response);
-              cerr << "Sent STATUS response" << endl;               
-
-
+              err = EOK;
             }
+            // Send STATUS response
+            response.connection = s.connection;
+            response.type = STATUS;
+            response.bytes = size;
+            response.error = err;
+            MinetSend(sock,response);
+            cerr << "Sent STATUS response" << endl;  
             break;
           }
           case CLOSE: {
+            cerr << "CLOSE request" << endl;
+            int err = ENOMATCH;
+            if(cs != clist.end() && cs->state.GetState() == ESTABLISHED) {
+              cs->state.SetState(FIN_WAIT1);
+              cs->bTmrActive = true;
+              cs->timeout = Time() + 2;
+              Packet p_send;
+              build_packet(p_send,*cs,0,FINACK);
+              // MinetSend(mux,p_send);
+              err = EOK;
+            }
 
+            // Send STATUS response
+            response.connection = s.connection;
+            response.type = STATUS;
+            response.bytes = 0;
+            response.error = err;
+            MinetSend(sock,response);
+            cerr << "Sent STATUS response" << endl; 
           }
           case FORWARD:
           case STATUS: 
@@ -451,6 +535,11 @@ void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, 
       break;
     }
     case FIN: {
+      SET_FIN(flag);
+      SET_ACK(flag);
+      break;
+    }
+    case FINACK: {
       SET_FIN(flag);
       SET_ACK(flag);
       break;
