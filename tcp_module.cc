@@ -182,7 +182,6 @@ int main(int argc, char *argv[])
               Packet p_send;
               build_packet(p_send,*cs,0,SYNACK);
               MinetSend(mux,p_send);
-              cs->state.SetLastSent(cs->state.GetLastSent()+1);
             }
             break;
           }
@@ -191,28 +190,29 @@ int main(int argc, char *argv[])
             if(IS_ACK(flag)) {
               cerr << "Received an ACK" << endl;
 
+              cs->state.SetLastSent(cs->state.GetLastSent() + 1);
               cs->state.SetState(ESTABLISHED);
-              cs->state.SetLastRecvd(cs->state.GetLastRecvd() + len);
+              // cs->state.SetLastRecvd(cs->state.GetLastRecvd() + len);
               cs->state.SetLastAcked(acknum);
               // cs->state.SetSendRwnd(win_size);
               cs->bTmrActive = false;
 
               // Send WRITE response
               cerr << "Passing empty write response to tell application connection is open" << endl;
-              SockRequestResponse response;
-              response.connection = cs->connection;
-              response.type = WRITE;
-              response.data = data;
-              response.bytes = len;
-              response.error = EOK;
-              MinetSend(sock,response);
+              // SockRequestResponse response;
+              // response.connection = cs->connection;
+              // response.type = WRITE;
+              // response.data = data;
+              // response.bytes = len;
+              // response.error = EOK;
+              // MinetSend(sock,response);
             }  
             break;
           }
             case ESTABLISHED: {
               cerr << "Entered ESTABLISHED" << endl;
 
-              if(IS_PSH(flag)) {
+              if(len > 0) {
                 cerr << "Received data" << endl;
                 cerr << "data:\n" << data << endl;
 
@@ -229,13 +229,13 @@ int main(int argc, char *argv[])
 
                   // Send WRITE response
                   cerr << "Passing data up to socket" << endl;
-                  SockRequestResponse response;
-                  response.connection = cs->connection;
-                  response.type = WRITE;
-                  response.data = data;
-                  response.bytes = len;
-                  response.error = EOK;
-                  MinetSend(sock,response);
+                  // SockRequestResponse response;
+                  // response.connection = cs->connection;
+                  // response.type = WRITE;
+                  // response.data = data;
+                  // response.bytes = len;
+                  // response.error = EOK;
+                  // MinetSend(sock,response);
                   
                 }
                 else {
@@ -243,7 +243,12 @@ int main(int argc, char *argv[])
                 }
 
               }
-              else if(IS_FIN(flag)) {
+              if(IS_ACK(flag)) {
+                if(cs->state.last_acked <= acknum) {
+                  cs->state.SetLastAcked(acknum);
+                }
+              }
+              if(IS_FIN(flag)) {
                 cerr << "Close Connection" << endl;
                 cs->state.SetState(CLOSE_WAIT);
                 cerr << "State: " << cs->state.GetState() << endl;
