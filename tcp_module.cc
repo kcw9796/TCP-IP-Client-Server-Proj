@@ -225,7 +225,7 @@ int main(int argc, char *argv[])
               response.data = data;
               response.bytes = len;
               response.error = EOK;
-              MinetSend(sock,response);
+              MinetSend(sock,response); 
             }  
             break;
           }
