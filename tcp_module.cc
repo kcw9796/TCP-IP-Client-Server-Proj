@@ -33,6 +33,7 @@ enum flag_state { SYN = 0,
                   FINACK = 7 };
 
 void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, int size, flag_state flag_s);
+void send_data_in_window(ConnectionToStateMapping<TCPState> &Conn_to_State, const MinetHandle &mux, bool GBN, bool timeout);
 
 int main(int argc, char *argv[])
 {
@@ -94,6 +95,10 @@ int main(int argc, char *argv[])
             Packet p_send;
             build_packet(p_send,*cs,0,FINACK);
             MinetSend(mux,p_send);
+            break;
+          }
+          case ESTABLISHED: {
+            send_data_in_window(*cs,mux,true,true);
             break;
           }
         }
@@ -284,7 +289,7 @@ int main(int argc, char *argv[])
               cerr << "data:\n" << data << endl;
 
               cerr << "seqnum: " << seqnum << endl;
-              if(seqnum == cs->state.GetLastRecvd()) {
+              if(seqnum == cs->state.GetLastRecvd() && checksum) {
                 cerr << "In order Packet" << endl;
                 cerr << "Old Last received: " << cs->state.GetLastRecvd() << endl; 
                 cs->state.SetLastRecvd(seqnum+len);
@@ -311,13 +316,24 @@ int main(int argc, char *argv[])
               }
 
             }
+            cerr << "Buffer Size: " << cs->state.SendBuffer.GetSize() << endl;
             if(IS_ACK(flag)) {
               cerr << "Received an ACK" << endl;
-              if(cs->state.last_acked <= acknum) {
-                cs->state.SetLastAcked(acknum);
+              if(cs->state.GetLastAcked() < acknum && checksum) {
+                if(acknum == cs->state.GetLastSent()) {
+                  cs->bTmrActive = false;
+                }
+                else {
+                  cs->timeout = Time() + 2;
+                  cs->bTmrActive = true;
+                }
+                int change_in_ack = acknum - cs->state.GetLastAcked();
+                cs->state.last_acked = acknum;
                 cerr << "New Last Acked: " << cs->state.GetLastAcked() << endl;
+                cs->state.SendBuffer.Erase(0,change_in_ack);
               }
             }
+            cerr << "New Buffer Size: " << cs->state.SendBuffer.GetSize() << endl;
             
             break;
           }
@@ -453,19 +469,25 @@ int main(int argc, char *argv[])
             unsigned int size = 0;
             int err = ENOMATCH;
             if(cs != clist.end() && cs->state.GetState() == ESTABLISHED) {
-              // cs->timeout = Time() + 2;
-              // cs->bTmrActive = true;
-              Buffer b = s.data;
-              cs->state.SendBuffer.AddBack(b);
-              size = cs->state.SendBuffer.GetSize();
-              cerr << "Size: " << size << endl;
-              cerr << b << endl;
-              Packet *p_send = new Packet(b);
-              cerr << "Seqnum: " << cs->state.GetLastSent() << endl;
-              build_packet(*p_send,*cs,size,PSHACK);
-              MinetSend(mux,*p_send);
-              delete p_send;
-              err = EOK;
+              // if(cs->state.TCP_BUFFER_SIZE > cs->state.SendBuffer.GetSize() + s.data.GetSize()) {
+              //   // Send STATUS response to fill buffer more
+              //   response.connection = s.connection;
+              //   response.type = STATUS;
+              //   response.bytes = 0;
+              //   response.error = EBUF_SPACE;
+              //   MinetSend(sock,response);
+              //   cerr << "Sent STATUS response" << endl;
+              //   break;
+              // }
+              if(1) {
+                Buffer b = s.data;
+                cerr << b << endl;
+                size = cs->state.SendBuffer.GetSize();
+                cerr << "Old Size: " << size << endl;           
+                cs->state.SendBuffer.AddBack(b);
+                send_data_in_window(*cs,mux,true,false);
+                err = EOK;
+              }
             }
             // Send STATUS response
             response.connection = s.connection;
@@ -485,7 +507,7 @@ int main(int argc, char *argv[])
               cs->timeout = Time() + 2;
               Packet p_send;
               build_packet(p_send,*cs,0,FINACK);
-              // MinetSend(mux,p_send);
+              MinetSend(mux,p_send);
               err = EOK;
             }
 
@@ -496,10 +518,21 @@ int main(int argc, char *argv[])
             response.error = err;
             MinetSend(sock,response);
             cerr << "Sent STATUS response" << endl; 
+            break;
           }
-          case FORWARD:
+          case FORWARD: {
+            // Send STATUS response
+            response.connection = s.connection;
+            response.type = STATUS;
+            response.bytes = 0;
+            response.error = EOK;
+            MinetSend(sock,response);
+            cerr << "Sent STATUS response" << endl; 
+            break;
+          }
           case STATUS: 
           default: {
+
             break;
           }
 
@@ -572,6 +605,60 @@ void build_packet(Packet &p, ConnectionToStateMapping<TCPState> &Conn_to_State, 
   cerr << iph << endl;
   cerr << tcph << endl;
 }
+
+void send_data_in_window(ConnectionToStateMapping<TCPState> &Conn_to_State, const MinetHandle &mux, bool GBN, bool timeout) {
+  
+  if(timeout) {
+    Conn_to_State.state.SetLastSent(Conn_to_State.state.GetLastAcked());
+  }
+
+  unsigned int packet_size = 0;
+  unsigned int already_sent_no_acks = Conn_to_State.state.GetLastSent() - Conn_to_State.state.GetLastAcked();
+  unsigned int n = Conn_to_State.state.GetN();
+  unsigned int ready_to_send = n - already_sent_no_acks;
+  unsigned int bytes_sent = 0;
+  unsigned int size = Conn_to_State.state.SendBuffer.GetSize();
+  unsigned int count = 0;
+  Buffer send_buf;
+
+  if(!GBN) {
+    bytes_sent = already_sent_no_acks;
+  }
+
+  cerr << "New size of Buffer: " << size << endl;
+  cerr << "Last Sent: " << Conn_to_State.state.GetLastSent() << endl;
+  cerr << "Bytes able to send: " << ready_to_send << endl;
+  cerr << "Sending all possible packets in window" << endl;
+  while(bytes_sent < size && bytes_sent < ready_to_send) {
+    if(count == 0) {
+      Conn_to_State.timeout = Time() + 2;
+      // Conn_to_State.bTmrActive = true;
+    }
+    packet_size = std::min(size-bytes_sent,TCP_MAXIMUM_SEGMENT_SIZE);
+    char data_send[packet_size+1];
+    Conn_to_State.state.SendBuffer.GetData(data_send,packet_size,bytes_sent);
+    send_buf.SetData(data_send,packet_size,0);
+    Packet *p_send = new Packet(send_buf);
+    build_packet(*p_send,Conn_to_State,packet_size,PSHACK);
+    MinetSend(mux,*p_send);
+    delete p_send;
+    cerr << "Packet Sent" << endl;
+    cerr << "New Buffer Size: " << Conn_to_State.state.SendBuffer.GetSize() << endl;
+    bytes_sent+=packet_size;
+  }
+
+}
+
+
+
+
+
+
+
+
+
+
+
 
 
 
